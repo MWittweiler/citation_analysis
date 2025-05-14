@@ -73,7 +73,7 @@ python citation_analysis.py --input_1 data/aeneid.txt --input_2 data/hieronymus_
 
 The script will produce:
 
-* `*_results.xlsx`: Results using the bigram matching method
+* `*_results.xlsx`: Results using the bigram matching method and the extended algorithm combined in one file
 
 
 ## Adjusting Parameters
