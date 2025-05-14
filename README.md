@@ -56,7 +56,7 @@ pip install -r requirements.txt
 # Run the script with the necessary arguments
 python citation_analysis.py --input_1 data/aeneid.txt --input_2 data/hieronymus_epistles.txt --genre_1 poetry --genre_2 prose
 ```
-## Note: The runtime increases exponentially the larger the input files are. For the sample files it took us about half an hour to run the script.
+**Note: The runtime increases exponentially the larger the input files are. For the sample files it took us about half an hour to run the script.**
 
 ### Mandatory Arguments
 
