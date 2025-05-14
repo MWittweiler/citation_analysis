@@ -1473,7 +1473,7 @@ def main():
     stop_list = args.stoplist
     htrg_switch = args.htrg
     similarity_switch = args.similarity
-    text_name_combined = input_text_1.strip(".txt") + "_" + input_text_2.strip(".txt")
+    text_name_combined = input_text_1[5].strip(".txt") + "_" + input_text_2[5].strip(".txt")
 
     global output_complura
     output_complura = text_name_combined + "_complura.xlsx"
