@@ -1,7 +1,7 @@
 # -*- coding: utf-8 -*-
 
 """
-Created on Tue March 5 2024, last updated on May 14 2025
+Created on Tue March 5 2024, last updated on October 20 2025
 Author: Michael Wittweiler based on work by Franziska Schropp and Marie Revellio
 
 This work was carried out as part of the project "Zitieren als narrative Strategie. Eine digital-hermeneutische Untersuchung von Intertextualitätsphänomenen am Beispiel des Briefcorpus des Kirchenlehrers Hieronymus." under the supervision of Prof. Dr. Barbara Feichtinger and Dr. Marie Revellio, and was supported by the German Research Foundation (DFG, Forschungsgemeinschaft) [382880410].
