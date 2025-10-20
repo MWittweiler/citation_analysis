@@ -1,0 +1,8 @@
+numpy==1.24.2
+openpyxl==3.1.5
+pandas==2.2.3
+spacy==3.8.5
+torch==2.7.0
+transformers==4.51.3
+sentencepiece==0.2.0
+la_core_web_lg @ https://huggingface.co/latincy/la_core_web_lg/resolve/main/la_core_web_lg-any-py3-none-any.whl
