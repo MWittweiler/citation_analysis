@@ -99,6 +99,6 @@ At the top of the script, four global variables can be changed. The values in th
 
 Author: Michael Wittweiler based on work by Franziska Schropp and Marie Revellio
 
-Do not hesitate to contact the author, if you spot mistakes or have questions! (michael.wittweiler@sglp.uzh.ch)
+Do not hesitate to contact the author, if you spot mistakes or have questions! (michael.wittweiler@iaka.uzh.ch)
 
 This work was carried out as part of the project "Zitieren als narrative Strategie. Eine digital-hermeneutische Untersuchung von Intertextualitätsphänomenen am Beispiel des Briefcorpus des Kirchenlehrers Hieronymus." under the supervision of Prof. Dr. Barbara Feichtinger and Dr. Marie Revellio, and was supported by the German Research Foundation (DFG, Forschungsgemeinschaft) [382880410].
