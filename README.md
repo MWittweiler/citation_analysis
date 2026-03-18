@@ -1,6 +1,6 @@
 # Citation Analysis Script
 
-The provided script `citation_analysis.py` is a pipeline developed in the DFG-funded project Quoting as a narrative strategy: A digital-hermeneutic analysis of intertextual phenomena using the example of the letters of Church Father Jerome".
+The provided script `citation_analysis.py` is a pipeline developed in the DFG-funded project "Quoting as a narrative strategy: A digital-hermeneutic analysis of intertextual phenomena using the example of the letters of Church Father Jerome".
 
 It compares two Latin texts, identifies potential citations and intertextual references, and returns an Excel file.
 
@@ -36,7 +36,7 @@ You will need:
 
 * **Python**:
 
-  * Tested with Python `3.10.10`.
+  * Tested with Python `3.12.3`.
   * Other versions may work but could require additional package management.
 
 ## Getting Started
