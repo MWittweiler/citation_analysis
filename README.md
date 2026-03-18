@@ -55,8 +55,14 @@ pip install -r requirements.txt
 
 # Run the script with the necessary arguments
 python citation_analysis.py --input_1 data/aeneid.txt --input_2 data/hieronymus_epistles.txt --genre_1 poetry --genre_2 prose
+
+# Run only the complura mechanism for 4+ word quotations
+python citation_analysis.py --input_1 data/aeneid.txt --input_2 data/hieronymus_epistles.txt --genre_1 poetry --genre_2 prose --complura-only
+
+# Use the Cracovia model for the HTRG filter (default is LatinCy)
+python citation_analysis.py --input_1 data/aeneid.txt --input_2 data/hieronymus_epistles.txt --genre_1 poetry --genre_2 prose --htrg-model cracovia
 ```
-## Note: The runtime increases exponentially the larger the input files are. For the sample files it took us about half an hour to run the script.
+## Note: The runtime increases exponentially the larger the input files are. For the sample files it took us about 15 minutes to run the script.
 
 ### Mandatory Arguments
 
@@ -65,9 +71,11 @@ python citation_analysis.py --input_1 data/aeneid.txt --input_2 data/hieronymus_
 
 ### Optional Arguments
 
-* `--stoplist filename.txt`: Use a custom stopword list
-* `--htrg False`: Disable the HTRG filter, e.g. if you can't install Cracovia system. This improves speed by a lot but expect about 25-50% more irrelevant findings.
-* `--similarity False`: Disable the semantic similarity filter, e.g. if you cant install LatinCy. Expect about 20-30% more irrelevant findings.
+* `--stoplist filename.txt`: Use a custom stopword list for the regular main search. This argument is ignored when `--complura-only` is used.
+* `--complura-only`: Run only the complura mechanism, skip the regular main search logic entirely, and bypass the downstream filters. Results are written to `*_complura.xlsx`. In this mode no stoplist is required. This is recommended if only a quick search for long literal quotations is needed. 
+* `--htrg false`: Disable the HTRG filter, e.g. if you cant install LatinCy. This improves speed but expect about 25-50% more irrelevant findings.
+* `--htrg-model {latincy,cracovia}`: Choose which POS model is used for the HTRG filter. `latincy` is the default and is also used by the similarity filter, so it is the easiest setup for most users. `cracovia` usually performs slightly better but requires the additional installation.
+* `--similarity false`: Disable the semantic similarity filter, e.g. if you cant install LatinCy. Expect about 20-30% more irrelevant findings.
 
 ## Output
 

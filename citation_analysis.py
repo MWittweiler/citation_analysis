@@ -11,7 +11,7 @@ This work was carried out as part of the project "Zitieren als narrative Strateg
 import csv
 import time
 import re
-from typing import List, Tuple, Any, Dict, Set, Union
+from typing import List, Tuple, Any, Dict, Set, Union, Optional
 from transformers import XLMRobertaForTokenClassification, XLMRobertaTokenizer 
 import torch
 import string
@@ -25,6 +25,9 @@ import numpy
 from numpy import dot
 from numpy.linalg import norm
 import argparse
+from functools import lru_cache
+from pathlib import Path
+from types import SimpleNamespace
 
 # Adjustable global variables --- EXPERIMENTAL ---
 min_number_of_shared_words = 2 # int, range(0,n); Used in the compare_text() function. 
@@ -130,24 +133,45 @@ main()
   |
   '----> write_to_excel(matches, output_excel) 
   """
+def str2bool(value: Union[str, bool]) -> bool:
+    """Parse common command-line boolean values."""
+    if isinstance(value, bool):
+        return value
+    normalized = value.strip().lower()
+    if normalized in {"true", "t", "yes", "y", "1"}:
+        return True
+    if normalized in {"false", "f", "no", "n", "0"}:
+        return False
+    raise argparse.ArgumentTypeError("Expected a boolean value (true/false).")
+
+
 def parse_args():
     parser = argparse.ArgumentParser()
 
     # Input file 1 path
-    parser.add_argument('--input_1', type=str,required=True,help='Path to the input file 1 (mandatory)')
+    parser.add_argument('--input_1', type=str, required=True, help='Path to the input file 1 (mandatory)')
     # Input file 2 path
     parser.add_argument('--input_2', type=str, required=True, help='Path to the input file 2 (mandatory)')
     # Genre choices
     parser.add_argument('--genre_1', required=True, choices=['prose', 'poetry'], help='Choose between "prose" and "poetry" depending on the FIRST input text.')
     parser.add_argument('--genre_2', required=True, choices=['prose', 'poetry'], help='Choose between "prose" and "poetry" depending on the SECOND input text.')
     # Stoplist
-    parser.add_argument('--stoplist', type=str, default='data/stoplist.txt', help='Path to the stoplist.')
-    # Skip HTRG filter
-    parser.add_argument('--htrg', type=bool, default=True, help='Setting this to False skips the HTRG filter, e.g. if you cant install Cracovia system. This improves speed by a lot but expect about 25-50% more irrelevant findings.')
-    # Skip similarity filter
-    parser.add_argument('--similarity', type=bool, default=True, help='Setting this to False skips the similarity filter, e.g. if you cant install LatinCy. Expect about 20-30% more irrelevant findings.')
+    parser.add_argument('--stoplist', type=str, default='data/stoplist.txt', help='Path to the stoplist. Ignored when --complura-only is used.')
+    # Run only complura matching
+    parser.add_argument('--complura-only', action='store_true', help='Run only the complura mechanism and skip the regular match search together with its downstream filters.')
+    # HTRG filter
+    parser.add_argument('--htrg', type=str2bool, nargs='?', const=True, default=True, help='Whether to run the HTRG filter (true/false). Default: true.')
+    parser.add_argument('--htrg-model', choices=['latincy', 'cracovia'], default='latincy', help='POS model used for the HTRG filter. Default: latincy. Cracovia usually performs slightly better but requires additional installation.')
+    # Similarity filter
+    parser.add_argument('--similarity', type=str2bool, nargs='?', const=True, default=True, help='Whether to run the similarity filter (true/false). Default: true.')
 
-    return parser.parse_args()
+    args = parser.parse_args()
+
+    if args.complura_only:
+        args.htrg = False
+        args.similarity = False
+
+    return args
 
 def tokenizer(text: str) -> list:
     """
@@ -262,7 +286,7 @@ def remove_whitespace_before_connectors(text_list: List[List[str]]) -> List[List
     Returns:
     - A new list of lists with the whitespace removed before connectors in the text strings.
     """
-    new_text_list = [[sublist[0], re.sub(" (que|ve|ue)([ ,\.!?])", r"\1\2", sublist[1])] for sublist in text_list]
+    new_text_list = [[sublist[0], re.sub(r" (que|ve|ue)([ ,.!?])", r"\1\2", sublist[1])] for sublist in text_list]
     return new_text_list
 
 # Remove digits (left over chapter numbers) at the start of each unit
@@ -276,7 +300,7 @@ def remove_left_over_counts(text_list: List[List[str]]) -> List[List[str]]:
     Returns:
     - A new list of lists with the leading digits removed from the text strings.
     """
-    new_text_list = [[sublist[0], re.sub('\A\d{1,3}\.?', "", sublist[1])] for sublist in text_list]
+    new_text_list = [[sublist[0], re.sub(r"\A\d{1,3}\.?", "", sublist[1])] for sublist in text_list]
     return new_text_list
     
 def strip_whitespaces(text_list: List[List[str]]) -> List[List[str]]:
@@ -748,11 +772,11 @@ def remove_unwanted_characters(text_list: List[List[str]]) -> List[List[str]]:
     Returns:
         List[List[str]]: The text list with unwanted characters removed and excessive spaces reduced.
     """
-    intab2 = "—?!-,.()[]:;\'\/\"”“„"  
-    outtab2 = "                   "
+    intab2 = "—?!-,.()[]:;'/\"”“„"
+    outtab2 = " " * len(intab2)
     transtab2 = maketrans(intab2,outtab2)
     new_text_list = [[item.translate(transtab2) for item in sublist] for sublist in text_list]
-    new_text_list = [[re.sub(" {2,}", " ", item) for item in sublist] for sublist in text_list]
+    new_text_list = [[re.sub(r" {2,}", " ", item) for item in sublist] for sublist in new_text_list]
     return new_text_list
 
 def tokenizer_2(text: str) -> List[str]:
@@ -766,7 +790,7 @@ def tokenizer_2(text: str) -> List[str]:
         List[str]: A list of words from the input string.
     """
     wort = ''
-    worttrennung = ' —?!-,.()[]:;\'\/\"”“„'
+    worttrennung = " —?!-,.()[]:;'/\"”“„"
     listetext = []
     text = text + '.'
     for k in text:
@@ -825,7 +849,7 @@ def highlight_shared_words(sentence: str, matched_items: list) -> str:
     Returns:
         str: The modified sentence with matched words surrounded by double asterisks ('**') to denote highlighting.
     """
-    trennung = ' —?!-,.()[]:;\'\/\"”“„'
+    trennung = " —?!-,.()[]:;'/\"”“„"
     wort = ''
     for k in sentence:
         if k not in trennung:
@@ -850,6 +874,9 @@ def find_four_adjacent(numbers: List[int]) -> List[int]:
     Returns:
         list: The longest sequence of at least four adjacent numbers found.
     """
+    if not numbers:
+        return []
+
     sorted_numbers = sorted(set(numbers))
     count = 1  # We start counting with the first number in the sorted list
     adjacent_sequence = [sorted_numbers[0]]  # Start with the first number in the sequence
@@ -861,7 +888,7 @@ def find_four_adjacent(numbers: List[int]) -> List[int]:
             adjacent_sequence.append(sorted_numbers[i])
             # Check if we have found at least four adjacent numbers
             if count >= 4:
-                sequence_storage.append(adjacent_sequence)
+                sequence_storage.append(adjacent_sequence.copy())
         else:
             # Reset count and sequence when a break in adjacency is found
             count = 1
@@ -872,11 +899,36 @@ def find_four_adjacent(numbers: List[int]) -> List[int]:
     else:
         return []  # Return an empty list if no sequence of four or more adjacent numbers was found
 
-def text_matching(tokens_1: List[List[str]], tokens_2: List[List[str]], original_text_list_1: List[List[str]], original_text_list_2: List[List[str]], meta_list_1: List[str], meta_list_2: List[str], stopwords: Set[str]) -> List[List]:
+
+def find_longest_common_contiguous_sequence(tokens_a: List[str], tokens_b: List[str], min_len: int) -> List[str]:
+    """Return the longest common contiguous token sequence shared by two token lists."""
+    if not tokens_a or not tokens_b:
+        return []
+
+    previous_row = [0] * (len(tokens_b) + 1)
+    best_length = 0
+    best_end_index_a = 0
+
+    for index_a, token_a in enumerate(tokens_a, start=1):
+        current_row = [0] * (len(tokens_b) + 1)
+        for index_b, token_b in enumerate(tokens_b, start=1):
+            if token_a and token_a == token_b:
+                current_row[index_b] = previous_row[index_b - 1] + 1
+                if current_row[index_b] > best_length:
+                    best_length = current_row[index_b]
+                    best_end_index_a = index_a
+        previous_row = current_row
+
+    if best_length < min_len:
+        return []
+
+    return tokens_a[best_end_index_a - best_length:best_end_index_a]
+
+def text_matching(tokens_1: List[List[str]], tokens_2: List[List[str]], original_text_list_1: List[List[str]], original_text_list_2: List[List[str]], meta_list_1: List[str], meta_list_2: List[str], stopwords: Set[str], regular_search_enabled: bool = True, complura_enabled: bool = True) -> List[List]:
     """
     Matches tokens between two lists of tokenized texts, excluding stopwords, and highlights matches in the texts.
-    Beside the regular text matching a second matching process takes place, which we call the Complura-Filter: Ignoring stopwords it looks for at least 4 (default, adjustable global var) adjacent 
-    tokens among both texts. These findings are considered relevant and directly written to a separate Excel file.
+    Beside the regular text matching a second matching process takes place, which we call the Complura-Filter: it looks for a shared contiguous token sequence of at least 4 words (default, adjustable global var)
+    among both texts, including stopwords.
 
     Args:
         tokens_1 (List[List[str]]): Tokenized text from the first document.
@@ -892,60 +944,42 @@ def text_matching(tokens_1: List[List[str]], tokens_2: List[List[str]], original
     """
     matches = []
     complura_matches = []
-    count= 0
+    count = 0
     complura_count = 0
-    for index_a in range(len(tokens_1)):
-        sublist_a = tokens_1[index_a]
-        for index_b in range(len(tokens_2)):
-            sublist_b = tokens_2[index_b]
-            matched_items = []
-            complura_matched_items = []
-            for position_a, item_a in enumerate(sublist_a):
-                for position_b, item_b in enumerate(sublist_b):
-                    if item_a == item_b and item_a:
-                        complura_matched_items.append((item_a, position_a, position_b))
-                    if item_a == item_b and item_a not in matched_items:
-                        if item_a not in stopwords:
-                            matched_items.append(item_a)
 
-            # This block represents the Complura-Filter: It looks for at least 4 (default value, adjustable) adjacent tokens that are shared among both sentences, in contrast to the rest including stopwords.
-            if len(complura_matched_items) >= min_number_complura:
-                indices_a = [element[1] for element in complura_matched_items]
-                indices_b = [element[2] for element in complura_matched_items]
-                # Find longest adjacent sequence of indices
-                index_sequence_a = find_four_adjacent(indices_a)
-                index_sequence_b = find_four_adjacent(indices_b)
-                
-                if len(index_sequence_a) >= min_number_complura and len(index_sequence_b) >= min_number_complura:
-                    # Convert indices back into words
-                    complura_shared = [sublist_a[idx] for idx in index_sequence_a]
+    for index_a, sublist_a in enumerate(tokens_1):
+        for index_b, sublist_b in enumerate(tokens_2):
+            matched_items = []
+
+            if complura_enabled:
+                complura_shared = find_longest_common_contiguous_sequence(sublist_a, sublist_b, min_number_complura)
+                if complura_shared:
                     complura_count += 1
-                    complura_listesatz_a = original_text_list_1[index_a] #get line as a list out of the original text
-                    complura_sentence_a = ' ' + complura_listesatz_a[0] + ' ' 
-                    complura_listesatz_b = original_text_list_2[index_b]
-                    complura_sentence_b = ' ' + complura_listesatz_b[0] + ' ' 
-                    
-                    # Highlight the shared words
+                    complura_sentence_a = ' ' + original_text_list_1[index_a][0] + ' '
+                    complura_sentence_b = ' ' + original_text_list_2[index_b][0] + ' '
+
                     complura_sentence_a = highlight_shared_words(complura_sentence_a, complura_shared)
                     complura_sentence_b = highlight_shared_words(complura_sentence_b, complura_shared)
+                    complura_shared_words = '; '.join(complura_shared)
 
-                    # Concatenate the shared words into a ; separated string for the output
-                    complura_shared_words = ''
-                    for element in complura_shared: 
-                        if len(complura_shared_words)>0:
-                            complura_shared_words = complura_shared_words + '; ' + element
-                        else:
-                            complura_shared_words = element
-                    
-                    # Append to complura_matches
-                    complura_line = [complura_count, meta_list_1[index_a]] + [complura_sentence_a] + [meta_list_2[index_b]] +  [complura_sentence_b] + [complura_shared_words]
+                    complura_line = [complura_count, meta_list_1[index_a], complura_sentence_a, meta_list_2[index_b], complura_sentence_b, complura_shared_words]
                     complura_matches.append(complura_line)
 
+            if regular_search_enabled:
+                sublist_b_lookup = set(sublist_b)
+                matched_seen = set()
+                for item_a in sublist_a:
+                    if not item_a or item_a in stopwords or item_a in matched_seen:
+                        continue
+                    if item_a in sublist_b_lookup:
+                        matched_seen.add(item_a)
+                        matched_items.append(item_a)
+
             # Here the regular matches get processed
-            if len(matched_items) >= min_number_of_shared_words:
-                count = count + 1 
+            if regular_search_enabled and len(matched_items) >= min_number_of_shared_words:
+                count = count + 1
                 listesatz_a = original_text_list_1[index_a] #get line as a list out of the original text
-                sentence_a = ' ' + listesatz_a[0] + ' ' 
+                sentence_a = ' ' + listesatz_a[0] + ' '
                 listesatz_b = original_text_list_2[index_b]
                 sentence_b = ' ' + listesatz_b[0] + ' '
 
@@ -954,16 +988,12 @@ def text_matching(tokens_1: List[List[str]], tokens_2: List[List[str]], original
                 sentence_b = highlight_shared_words(sentence_b, matched_items)
                 shared_words = ''
                 for element in matched_items:
-                    if len(shared_words)>0:
+                    if len(shared_words) > 0:
                         shared_words = shared_words + '; ' + element
                     else:
                         shared_words = element
-                line = [count, meta_list_1[index_a]] + [sentence_a] + [meta_list_2[index_b]] +  [sentence_b] + [shared_words]
+                line = [count, meta_list_1[index_a]] + [sentence_a] + [meta_list_2[index_b]] + [sentence_b] + [shared_words]
                 matches.append(line)
-
-    # Prepare the Complura matches and write them to Excel            
-    # complura_matches_meta = [['Number', 'Passage Text A', 'Text A', 'Passage Text B', 'Text B', 'shared words']] + complura_matches
-    # write_to_excel(complura_matches_meta, output_complura)
 
     # Return the matches
     return matches, complura_matches
@@ -1050,7 +1080,7 @@ def write_matches(matches_meta: List[List[str]], output_file: str) -> None:
         for i in matches_meta:
             result.writerow(i)
 
-def compare_texts(text_list_1: List[List[str]], text_list_2: List[List[str]], stop_list: str) -> List[List[str]]:
+def compare_texts(text_list_1: List[List[str]], text_list_2: List[List[str]], stop_list: str, complura_only: bool = False) -> Tuple[List[List[str]], List[List[str]]]:
     """
     Control function for the text matching. The preprocessed texts are read in and split in text and metadata. 
     The text is further normalized and tokenized. Text matching is done sentence by sentence: If a sentence-pair has at least X shared words (global variable 'min_number_shared_words') stopwords excluded,
@@ -1080,17 +1110,28 @@ def compare_texts(text_list_1: List[List[str]], text_list_2: List[List[str]], st
     # Tokenization
     tokens_1 = tokenize_text(pure_text_list_1)
     tokens_2 = tokenize_text(pure_text_list_2)
-    # initialize Stopwords
-    stopwords = initialize_stopwords(stop_list)
+    # initialize stopwords only when the regular search is active
+    stopwords = initialize_stopwords(stop_list) if (not complura_only and stop_list) else set()
     # actual text matching
-    matches, matches_complura = text_matching(tokens_1, tokens_2, original_text_list_1, original_text_list_2, meta_list_1, meta_list_2, stopwords)
+    matches, matches_complura = text_matching(
+        tokens_1,
+        tokens_2,
+        original_text_list_1,
+        original_text_list_2,
+        meta_list_1,
+        meta_list_2,
+        stopwords,
+        regular_search_enabled=not complura_only,
+        complura_enabled=True,
+    )
 
     # Add descriptions of the columns and write matches to file
     # matches_meta = [['Number', 'Passage Text A', 'Text A', 'Passage Text B', 'Text B', 'shared words']] + matches 
     # write_matches(matches_meta, output_matches)
 
     # Check for the distance criterion
-    matches = apply_distance_criterion(matches, stopwords)
+    if not complura_only:
+        matches = apply_distance_criterion(matches, stopwords)
     # matches_meta = [['Number', 'Passage Text A', 'Text A', 'Passage Text B', 'Text B', 'shared words']] + matches 
     # write_matches(matches_meta, output_distance)
             
@@ -1189,26 +1230,37 @@ def scissa(matches: List[List[str]]) -> List[List[str]]:
 
     return new_matches
 
-def load_cracovia() -> Language:
+@lru_cache(maxsize=1)
+def load_cracovia() -> Tuple[XLMRobertaTokenizer, XLMRobertaForTokenClassification]:
     """
-    Load the tokenizer and model from the specified path (global variable).
+    Load the Cracovia tokenizer and model.
 
     Returns:
-        tuple: A tuple containing the tokenizer and model.
+        Tuple[XLMRobertaTokenizer, XLMRobertaForTokenClassification]: Loaded tokenizer and model.
     """
-    # Load the model and tokenizer
     cracovia_tokenizer = XLMRobertaTokenizer.from_pretrained(BASE_MODEL_NAME)
     model = XLMRobertaForTokenClassification.from_pretrained(BASE_MODEL_NAME)
 
-    # Move model to GPU if available
     if torch.cuda.is_available():
         model = model.to("cuda")
-        print("Model loaded on CUDA")
+        print("Cracovia model loaded on CUDA")
     else:
-        print("CUDA not available, using CPU")
+        print("CUDA not available, using CPU for Cracovia")
 
     model.eval()
     return cracovia_tokenizer, model
+
+
+@lru_cache(maxsize=1)
+def load_latincy() -> Language:
+    """
+    Loads the LatinCy spaCy model specified by the global variable `spacy_model`.
+
+    Returns:
+        Language: A loaded spaCy language model ready for processing text.
+    """
+    return spacy.load(spacy_model)
+
 
 # Preprocessing function; punctuation and asterisks
 def preprocess_text(text: str) -> str:
@@ -1221,11 +1273,11 @@ def preprocess_text(text: str) -> str:
     Returns:
         str: The preprocessed text string.
     """
-    # Add spaces around punctuation so they're treated as separate tokens
     for punct in string.punctuation:
         text = text.replace(punct, f' {punct} ')
-    text = " et " + text # as the model frequently tagged the first word wrong, adding a dummy latin word improved the performance on the actual first word
+    text = " et " + text  # the model frequently tagged the first word wrongly; adding a dummy Latin word improved performance on the actual first word
     return text
+
 
 def group_subwords_to_words(tokenized_sentence: List[str]) -> List[str]:
     """
@@ -1240,170 +1292,140 @@ def group_subwords_to_words(tokenized_sentence: List[str]) -> List[str]:
     grouped_tokens = []
     current_word = ""
     for token in tokenized_sentence:
-        if token.startswith("▁"):  # This indicates a new word in SentencePiece tokenization.
+        if token.startswith("▁"):
             if current_word:
                 grouped_tokens.append(current_word)
-            current_word = token[1:]  # skip the "▁" character
+            current_word = token[1:]
         else:
             current_word += token
     if current_word:
         grouped_tokens.append(current_word)
     return grouped_tokens
 
-def tag_text(text: str, model, cracovia_tokenizer) -> List[Tuple[str, str]]:
-    """
-    Tags text with parts of speech using a pre-trained model and tokenizer.
 
-    Args:
-        text (str): The text to tag.
-        model: The pre-trained POS tagging model, Cracovia system.
-        cracovia_tokenizer: The tokenizer for the model.
-
-    Returns:
-        List[Tuple[str, str]]: A list of tuples containing words and their corresponding POS tags.
-    """
-    # Preprocessing and Tokenization
+def tag_text_cracovia(text: str, model: XLMRobertaForTokenClassification, cracovia_tokenizer: XLMRobertaTokenizer) -> List[Tuple[str, str]]:
+    """Tag text with parts of speech using the Cracovia model."""
     tokens = cracovia_tokenizer.tokenize(preprocess_text(text))
 
-    # In some rare cases a way too large text was put together in the matching process. This block eliminates these errors that could cause the HTRG to fail
     MAX_TOKEN_LENGTH = 512
-    # Skip processing if tokens exceed the maximum length
     if len(tokens) > MAX_TOKEN_LENGTH:
         print(f"Skipping text as it exceeds maximum token length: {len(tokens)} tokens")
         return []
-    
+
     input_ids = cracovia_tokenizer.convert_tokens_to_ids(tokens)
     inputs = torch.tensor([input_ids])
 
-    # Move input tensor to the same device as the model
     device = next(model.parameters()).device
     inputs = inputs.to(device)
 
     with torch.no_grad():
         outputs = model(inputs)
         predictions = torch.argmax(outputs.logits, dim=2).squeeze().tolist()
-              
-    # Convert numbers into tags
+
     id2label = {0: "", 1: "ADJ", 2: "ADP", 3: "ADV", 4: "AUX", 5: "CCONJ", 6: "DET", 7: "INTJ", 8: "NOUN", 9: "NUM", 10: "PART", 11: "PRON", 12: "PROPN", 13: "PUNCT", 14: "SCONJ", 15: "VERB", 16: "X", 17: "O"}
-
-    token_tags = [id2label[id] for id in predictions]
-
-    # Regroup the subword tokens
+    token_tags = [id2label[tag_id] for tag_id in predictions]
     grouped_tokens = group_subwords_to_words(tokens)
 
-    # Approach to match words in grouped_tokens to their tags
     token_idx = 0
     predicted_tags = []
-
     for word in grouped_tokens:
         word_as_subtokens = cracovia_tokenizer.tokenize(word)
         num_subtokens = len(word_as_subtokens)
-        
-        # Use the tag of the first subtoken for the word
         predicted_tags.append(token_tags[token_idx])
-        
-        # Move to the next token
         token_idx += num_subtokens
 
-    #Make a dict out of the results
-    word_tag_list = list(zip([word.lower() for word in grouped_tokens], predicted_tags))
-    return word_tag_list
+    return list(zip([word.lower() for word in grouped_tokens], predicted_tags))
 
-def htrg(matches: List[List[str]]) -> List[List[str]]:
+
+def tag_text_latincy(text: str, nlp: Language) -> List[Tuple[str, str]]:
+    """Tag text with parts of speech using the LatinCy model."""
+    doc = nlp(text)
+    return [(token.text.lower(), token.pos_) for token in doc if not token.is_space]
+
+
+def get_htrg_tagger(model_name: str):
+    """Return the requested HTRG tagger resources and tagging function."""
+    if model_name == 'cracovia':
+        cracovia_tokenizer, model = load_cracovia()
+        return SimpleNamespace(
+            tag=lambda text: tag_text_cracovia(text, model, cracovia_tokenizer),
+            name='cracovia',
+        )
+    if model_name == 'latincy':
+        nlp = load_latincy()
+        return SimpleNamespace(
+            tag=lambda text: tag_text_latincy(text, nlp),
+            name='latincy',
+        )
+    raise ValueError(f"Unsupported HTRG model: {model_name}")
+
+
+def htrg(matches: List[List[str]], model_name: str = 'latincy') -> List[List[str]]:
     """
-    Control function for the HTRG filter. For further filtering the Parts-of-Speech of the shared words are analyzed by the Cracovia system.
-    Only the POS tags NOUN VERB and PROPER NOUN (PROPN) are considered relevant and retained. 
+    Control function for the HTRG filter. For further filtering the parts of speech of the shared words are analyzed.
+    The user can choose between the Cracovia model and LatinCy for POS tagging.
 
     Args:
         matches (List[List[str]]): The list of text matches.
+        model_name (str): POS backend used for HTRG ('latincy' or 'cracovia').
 
     Returns:
         List[List[str]]: The list of matches that meet specified grammatical criteria.
     """
-    cracovia_tokenizer, model = load_cracovia()
-    grammar = [('NOUN', 'VERB'), ('VERB', 'NOUN'), ('NOUN', 'NOUN'), ('VERB', 'VERB'), ('PROPN', 'NOUN'), ('PROPON', 'VERB'), ('NOUN', 'PROPN'), ('VERB', 'PROPN'), ('PROPN', 'PROPN')]   #HTRG als Tupel, alle Varianten vorwärts und rückwärts 
-    G = set(grammar)
+    tagger = get_htrg_tagger(model_name)
+    grammar = [('NOUN', 'VERB'), ('VERB', 'NOUN'), ('NOUN', 'NOUN'), ('VERB', 'VERB'), ('PROPN', 'NOUN'), ('PROPN', 'VERB'), ('NOUN', 'PROPN'), ('VERB', 'PROPN'), ('PROPN', 'PROPN')]
+    relevant_pairs = set(grammar)
     new_matches = []
+
     for line in matches:
-        shared = line[5].split(";")
-        shared = [word.strip() for word in shared]
-        text_1 = line[2].replace('**',' ')
-        text_2 = line[4].replace('**',' ')
-        word_tag_list_1 = tag_text(text_1, model, cracovia_tokenizer) 
-        word_tag_list_2 = tag_text(text_2, model, cracovia_tokenizer) 
-        tokens_1 = [element[0] for element in word_tag_list_1] 
-        tokens_2 = [element[0] for element in word_tag_list_2] 
-        tags_1 = [element[1] for element in word_tag_list_1] 
-        tags_2 = [element[1] for element in word_tag_list_2] 
+        shared = [word.strip() for word in line[5].split(';')]
+        text_1 = line[2].replace('**', ' ')
+        text_2 = line[4].replace('**', ' ')
+        word_tag_list_1 = tagger.tag(text_1)
+        word_tag_list_2 = tagger.tag(text_2)
+
+        if not word_tag_list_1 or not word_tag_list_2:
+            continue
+
+        tokens_1 = [element[0] for element in word_tag_list_1]
+        tokens_2 = [element[0] for element in word_tag_list_2]
+        tags_1 = [element[1] for element in word_tag_list_1]
+        tags_2 = [element[1] for element in word_tag_list_2]
 
         pos_1 = []
         pos_2 = []
         for item in shared:
-            indices_1 = [i for i,val in enumerate(tokens_1) if val.lower() == item]
-            indices_2 = [i for i,val in enumerate(tokens_2) if val.lower() == item]
-            shared_hier_tags = [tags_1[i] for i in indices_1]
-            shared_verg_tags = [tags_2[i] for i in indices_2]
-            pos_1.append(shared_hier_tags)
-            pos_2.append(shared_verg_tags)
+            indices_1 = [i for i, val in enumerate(tokens_1) if val == item]
+            indices_2 = [i for i, val in enumerate(tokens_2) if val == item]
+            shared_tags_1 = [tags_1[i] for i in indices_1]
+            shared_tags_2 = [tags_2[i] for i in indices_2]
+            if not shared_tags_1 or not shared_tags_2:
+                pos_1 = []
+                pos_2 = []
+                break
+            pos_1.append(shared_tags_1)
+            pos_2.append(shared_tags_2)
+
+        if not pos_1 or not pos_2:
+            continue
+
         combinations_1 = list(itertools.product(*pos_1))
         combinations_2 = list(itertools.product(*pos_2))
         line.append(combinations_1)
-        tuples_1 = [set(combinations(s,2)) for s in combinations_1]
-        htrg_1 = []
-        for s in tuples_1:
-            c = G.intersection(s)
-            if len(c) > 0:
-                htrg_1.append(c)
-        """  if len(htrg_hier) > 0:
-            line.append('HTRG: in')
-        else:
-            line.append('HTRG: out') """
-        line.append(combinations_2)  
-        tuples_2 = [set(combinations(s,2)) for s in combinations_2]
-        htrg_2 = []
-        for s in tuples_2:
-            c = G.intersection(s)
-            if len(c) > 0:
-                htrg_2.append(c)
-        """ if len(htrg_verg) > 0:
-            line.append('HTRG: in')
-        else:
-            line.append('HTRG: out') """
+        line.append(combinations_2)
 
-        shared_combinations = set(combinations_1).intersection(set(combinations_2)) #Find combinations that match
-        #line.append(shared_combinations)
+        tuples_1 = [set(combinations(sequence, 2)) for sequence in combinations_1]
+        tuples_2 = [set(combinations(sequence, 2)) for sequence in combinations_2]
 
-        shared_tuples = [x.intersection(y) for x,y in zip(tuples_1,tuples_2)] #Find tuples that are the same
-        #line.append(shared_tuples)
-        htrg_shared = []
-        for s in shared_tuples:
-            c = G.intersection(s)
-            if len(c) > 0:
-                htrg_shared.append(c)
-        if len(htrg_shared) > 0:
+        shared_tuples = [left.intersection(right) for left, right in zip(tuples_1, tuples_2)]
+        htrg_shared = [relevant_pairs.intersection(candidate) for candidate in shared_tuples if relevant_pairs.intersection(candidate)]
+
+        if htrg_shared:
             line.append('in')
             new_matches.append(line)
-        """else:
-            line.append('out')
 
-         if line[-6] == line[-4]:
-            line.append('both ' + line[-6])
-        else:
-            line.append('both differ in HTRG') """
-        
-    #matches_meta = [['Number', 'Passage Text A', 'Text A', 'Passage Text B', 'Text B', 'shared words', "POS A", "POS B", "HTRG"]] + new_matches 
-    #write_matches(matches_meta, output_htrg)
     return new_matches
 
-def load_latincy() -> Language:
-    """
-    Loads a spaCy language model specified by the global variable `spacy_model`.
-
-    Returns:
-        Language: A loaded spaCy language model ready for processing text.
-    """
-    nlp = spacy.load(spacy_model)
-    return nlp
 
 def cossim(vectorlist: List[numpy.ndarray]) -> Union[float, str]: 
     """
@@ -1427,7 +1449,7 @@ def cossim(vectorlist: List[numpy.ndarray]) -> Union[float, str]:
 def similarity_filter(matches: List[List[str]]) -> List[List[str]]:
     """
     Control function for the similarity filter. Filters a list of text matches based on the cosine similarity of embeddings from shared words.
-    Uses a spaCy model to generate embeddings and a global threshold `similarity_threshold` to determine relevance. Output is also written as a tab-separated .txt file.
+    Uses LatinCy embeddings and the global threshold `similarity_threshold` to determine relevance.
 
     Args:
         matches (List[List[str]]): A list of matches, each an array of strings with shared words at index 5.
@@ -1438,22 +1460,42 @@ def similarity_filter(matches: List[List[str]]) -> List[List[str]]:
     nlp = load_latincy()
     new_matches = []
     for line in matches:
-        shared = line[5].split(";")
-        shared = [word.strip() for word in shared] 
+        shared = [word.strip() for word in line[5].split(";")]
         if len(shared) == 2:
             doc_1 = nlp(shared[0])
             doc_2 = nlp(shared[1])
-            embedding_1 = doc_1.vector
-            embedding_2 = doc_2.vector
-            embedding = [embedding_1, embedding_2]
-            sim = round(cossim(embedding), 2)
+            embedding = [doc_1.vector, doc_2.vector]
+            sim = cossim(embedding)
+            if isinstance(sim, str):
+                line.append(sim)
+                new_matches.append(line)
+                continue
+            sim = round(float(sim), 2)
             line.append(sim)
             if sim <= similarity_threshold:
                 new_matches.append(line)
         else:
             new_matches.append(line)
-        
+
     return new_matches
+
+
+def build_output_stem(input_text_1: str, input_text_2: str) -> str:
+    """Build a safe output stem from the two input filenames."""
+    return f"{Path(input_text_1).stem}_{Path(input_text_2).stem}"
+
+
+def deduplicate_matches(matches: List[List[str]], complura_matches: List[List[str]]) -> List[List[str]]:
+    """Merge regular and complura matches while removing duplicate passage pairs."""
+    combined_matches = list(matches)
+    seen = {tuple(match[1:5]) for match in matches}
+    for complura_match in complura_matches:
+        key = tuple(complura_match[1:5])
+        if key not in seen:
+            combined_matches.append(complura_match)
+            seen.add(key)
+    return combined_matches
+
 
 def write_to_excel(matches: List[List[str]], output_path) -> None:
     """
@@ -1467,8 +1509,8 @@ def write_to_excel(matches: List[List[str]], output_path) -> None:
 
 def main():
     # Start the timer
-    start_time = time.perf_counter()   
-    
+    start_time = time.perf_counter()
+
     args = parse_args()
     input_text_1 = args.input_1
     input_text_2 = args.input_2
@@ -1476,8 +1518,10 @@ def main():
     genre_2 = args.genre_2
     stop_list = args.stoplist
     htrg_switch = args.htrg
+    htrg_model = args.htrg_model
     similarity_switch = args.similarity
-    text_name_combined = input_text_1.strip(".txt") + "_" + input_text_2.strip(".txt")
+    complura_only = args.complura_only
+    text_name_combined = build_output_stem(input_text_1, input_text_2)
 
     global output_complura
     output_complura = text_name_combined + "_complura.xlsx"
@@ -1487,52 +1531,55 @@ def main():
     assimilated_list_1 = assimilation(input_text_1)
     assimilated_list_2 = assimilation(input_text_2)
     print(time.perf_counter() - start_time, "seconds assimilation finished")
-    
+
     # Do the phrasing. Apply prose or poetry phrasing depending on the genre.
     if genre_1 == "poetry":
         phrasing_list_1 = phrasing_poetry(assimilated_list_1)
     elif genre_1 == "prose":
         phrasing_list_1 = phrasing_prose(assimilated_list_1)
-    if genre_2 =="poetry":
+
+    if genre_2 == "poetry":
         phrasing_list_2 = phrasing_poetry(assimilated_list_2)
     elif genre_2 == "prose":
         phrasing_list_2 = phrasing_prose(assimilated_list_2)
     print(time.perf_counter() - start_time, "seconds phrasing finished")
-    
-    # Textmatching
+
+    # Text matching
     print(time.perf_counter() - start_time, "seconds textmatching started")
-    matches, complura_matches = compare_texts(phrasing_list_1, phrasing_list_2, stop_list)
+    matches, complura_matches = compare_texts(phrasing_list_1, phrasing_list_2, stop_list, complura_only=complura_only)
     print(time.perf_counter() - start_time, "seconds textmatching finished")
-    
+
+    if complura_only:
+        complura_output = [['Number', 'Passage Text A', 'Text A', 'Passage Text B', 'Text B', 'shared words']] + complura_matches
+        write_to_excel(complura_output, output_complura)
+        print(time.perf_counter() - start_time, "seconds complura-only analysis finished, results written to Excel")
+        return
+
     # Scissa filter
     matches = scissa(matches)
     print(time.perf_counter() - start_time, "seconds scissa filter finished")
 
     # HTRG filter
-    if htrg_switch == True:
-        print(time.perf_counter() - start_time, "seconds HTRG filter started")
-        matches = htrg(matches)
+    if htrg_switch:
+        print(time.perf_counter() - start_time, f"seconds HTRG filter started using {htrg_model}")
+        matches = htrg(matches, model_name=htrg_model)
         print(time.perf_counter() - start_time, "seconds HTRG filter finished")
-    elif htrg_switch == False:
+    else:
         print(time.perf_counter() - start_time, "seconds HTRG filter skipped")
 
     # Context similarity filter
-    if similarity_switch == True:
+    if similarity_switch:
         print(time.perf_counter() - start_time, "seconds context similarity filter started")
         matches = similarity_filter(matches)
         print(time.perf_counter() - start_time, "seconds context similarity filter finished")
-    elif similarity_switch == False:
+    else:
         print(time.perf_counter() - start_time, "seconds similarity filter skipped")
 
-    # Combine resuls of filtered matching and complura matching, eliminating duplicates
-    for cmatch in complura_matches:
-        for match in matches: 
-            if cmatch[1] != match[1] and cmatch[3] != match[3]:
-                matches.append(cmatch)
-                break
-    
+    # Combine results of filtered matching and complura matching, eliminating duplicates
+    matches = deduplicate_matches(matches, complura_matches)
+
     # Write results to Excel
-    matches = [['Number', 'Passage Text A', 'Text A', 'Passage Text B', 'Text B', 'shared words', "POS A", "POS B", "HTRG", "Context similarity"]] + matches 
+    matches = [['Number', 'Passage Text A', 'Text A', 'Passage Text B', 'Text B', 'shared words', "POS A", "POS B", "HTRG", "Context similarity"]] + matches
     write_to_excel(matches, output_excel)
     print(time.perf_counter() - start_time, "seconds citation analysis finished, results written to Excel")
 
